@@ -92,78 +92,94 @@ function populate(){topics.forEach(t=>{let o=document.createElement('option');o.
 function render(){let arr=topic().steps;idx=Math.min(idx,arr.length-1);let s=step();$('prompt').textContent=s[0];showTr($('translation'),s[1]);$('stepLabel').textContent=`PREGUNTA ${idx+1} DE ${arr.length}`;$('progress').style.width=((idx+1)/arr.length*100)+'%';$('hintText').innerHTML='<b>Example answer / Respuesta de ejemplo:</b><br>'+s[2]+'<div class="tiny tinyTranslation">'+escapeHtml(exampleSpanish(s[2]))+'</div><div class="tiny">'+escapeHtml(explainPattern(s[2]))+'<br>'+escapeHtml(explainPatternEs(s[2]))+'</div><button class="smallbtn" data-say="'+escapeHtml(s[2])+'">🔊 Replay example</button>';  $('hintText').querySelector('.tinyTranslation').classList.toggle('hidden',!tr()); $('hintText').classList.add('hidden');$('transcript').value=recognized||'';$('feedback').classList.add('hidden');$('next').disabled=!recognized;$('next').textContent=idx===arr.length-1?'Finish ✓':'Next →';$('retry').disabled=false}
 function showFeedback(text){let s=step(),t=text.trim(),fb=$('feedback');fb.classList.remove('hidden','warn');let clean=t.replace(/[.!?]+$/,'');let msg='<h3>🌱 Nice work! Let’s build on that.</h3><b>You said:</b><br>'+escapeHtml(t)+'<br><br><b>Try expanding your answer:</b><br>'+escapeHtml(s[2])+'<br><span class="tiny">'+escapeHtml(s[2]=== 'I’d like a coffee, please.'?'Me gustaría un café, por favor.':s[2]=== 'I usually wake up at…'?'Normalmente me despierto a las…':s[2]=== 'I usually have…'?'Normalmente desayuno / tomo…':s[2]=== 'I go to bed at…'?'Me voy a dormir a las…':s[2]=== 'I’m from Mexico.'?'Soy de México.':s[2]=== 'In my free time, I like…'?'En mi tiempo libre me gusta…':s[2]=== 'First, I…'?'Primero…':s[2]=== 'For here, please. / To go, please.'?'Para aquí, por favor. / Para llevar, por favor.':s[2]=== 'No, that’s all, thank you.'?'No, eso es todo, gracias.':s[2]=== 'Could I have the bill, please?'?'¿Me trae la cuenta, por favor?':s[2]=== 'I’m making…'?'Estoy preparando…':s[2]=== 'We need…'?'Necesitamos…':s[2]=== 'I’m full. It was delicious.'?'Estoy llena. Estuvo delicioso.':s[2]=== 'I need to finish this today.'?'Necesito terminar esto hoy.':s[2]=== 'I’ll take care of it.'?'Yo me encargo.':s[2]=== 'I’m running late.'?'Voy retrasada / voy tarde.':s[2]=== 'Something came up.'?'Surgió algo.':s[2]=== 'I’m really into…'?'Me interesa mucho…':s[2]=== 'I’m a little overwhelmed.'?'Me siento un poco abrumada.':s[2]=== 'I have a headache.'?'Me duele la cabeza.':s[2]=== 'I don’t feel well.'?'No me siento bien.':s[2]=== 'My name is… / I’m…'?'Me llamo… / Soy…':s[2])+'</span><br><br><b>Practice tip:</b> Try saying your answer in a complete sentence. Add one detail: when, where, why, or how.';msg+='<br><br><b>Coach tip / Consejo:</b><br>'+escapeHtml(feedbackAdvice(t))+'<br><br><b>How to say it / Cómo expresarlo:</b><br>'+escapeHtml(s[2])+'<br><span class="tiny">'+escapeHtml(exampleSpanish(s[2]))+'</span><br><br><b>Why / ¿Por qué?:</b><br>'+escapeHtml(explainPattern(s[2]))+'<br><span class="tiny">'+escapeHtml(explainPatternEs(s[2]))+'</span><br><br><button class=\"smallbtn\" data-say=\"'+escapeHtml(s[2])+'\">🔊 Listen to suggested answer</button>';fb.innerHTML=msg; $('next').disabled=false;setStatus('¡Te escuché! Puedes reproducir tu grabación, repetir o avanzar.');}
 function escapeHtml(x){return x.replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
-let micSession=null,recordedAudio=null,recordingUrl=null,recordingTarget='guided';
+let micSession=null,recordedAudio=null,recordingUrl=null,recordingTarget='guided',activeSpeechSession=null;
 function saveAudio(blob,target){if(recordingUrl)URL.revokeObjectURL(recordingUrl);recordingUrl=URL.createObjectURL(blob);recordedAudio=recordingUrl;let btn=$(target==='free'?'freePlayAudio':'playMyAudio');btn.classList.remove('hidden');btn.onclick=()=>{let a=new Audio(recordedAudio);a.play()}}
 async function listenMic(callback,stat,trans,target='guided',stopButton=null,startButton=null){
   const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
   if(!SR){stat('Este navegador no ofrece reconocimiento de voz. Prueba Chrome actualizado.');return;}
   if(!window.isSecureContext){stat('El reconocimiento de voz requiere una página HTTPS.');return;}
-  // Igual que en la primera versión: comprobar permiso y liberar el micrófono
-  // ANTES de iniciar SpeechRecognition. No ejecutar MediaRecorder a la vez.
+  // Comprobamos el permiso y liberamos el micrófono antes de iniciar el reconocimiento.
   try{
     const permissionStream=await navigator.mediaDevices.getUserMedia({audio:true});
     permissionStream.getTracks().forEach(track=>track.stop());
-  }catch(err){
-    stat('No se pudo acceder al micrófono. Revisa el permiso de Chrome.');
-    return;
-  }
+  }catch(err){stat('No se pudo acceder al micrófono. Revisa el permiso de Chrome.');return;}
   try{
-    if(recognition){try{recognition.abort();}catch(e){}}
-    const rec=new SR();
-    recognition=rec;
-    rec.lang='en-US';
-    rec.continuous=false;
-    rec.interimResults=true;
-    rec.maxAlternatives=1;
-    let finalText='';
-    let finished=false;
+    if(activeSpeechSession){activeSpeechSession.stopped=true;try{activeSpeechSession.current&&activeSpeechSession.current.abort()}catch(e){}}
+    const session={stopped:false,finalText:'',current:null,timer:null,done:false};
+    activeSpeechSession=session;
     const cleanup=()=>{
-      if(finished)return;
-      finished=true;
+      if(session.done)return;
+      session.done=true;
+      if(session.timer)clearTimeout(session.timer);
       if(stopButton)stopButton.classList.add('hidden');
       if(startButton)startButton.classList.remove('hidden');
-      if(recognition===rec)recognition=null;
+      if(activeSpeechSession===session)activeSpeechSession=null;
+      if(recognition===session.current)recognition=null;
     };
-    rec.onstart=()=>{
-      stat('🎙️ Listening… habla en inglés. Chrome transcribirá tu respuesta y terminará la escucha al detectar una pausa.');
-      if(stopButton)stopButton.classList.remove('hidden');
-      if(startButton)startButton.classList.add('hidden');
-    };
-    rec.onresult=e=>{
-      let interim='';
-      for(let i=e.resultIndex;i<e.results.length;i++){
-        const result=e.results[i];
-        if(!result||!result[0])continue;
-        if(result.isFinal){finalText=(finalText+' '+result[0].transcript).trim();}
-        else interim+=result[0].transcript+' ';
-      }
-      const visible=(finalText+' '+interim).trim();
-      trans.value=visible;
-      if(visible)trans.placeholder='Tu voz se está convirtiendo en texto…';
-    };
-    rec.onerror=e=>{
-      if(e.error==='no-speech')stat('Chrome no detectó palabras. Intenta hablar justo después de pulsar Speak.');
-      else if(e.error!=='aborted')stat('El reconocimiento de voz falló: '+e.error+'.');
-    };
-    rec.onend=()=>{
-      const result=finalText.trim()||trans.value.trim();
-      if(result){
-        trans.value=result;
-        callback(result);
-      }else if(!finished){
-        stat('Chrome terminó la escucha, pero no entregó una transcripción. No escribas todavía: dime si aparece este mensaje o algún código de error.');
-      }
+    const finish=()=>{
+      const result=session.finalText.trim()||trans.value.trim();
       cleanup();
+      if(result){trans.value=result;callback(result);}
+      else stat('No se detectaron palabras. Pulsa Speak para intentarlo otra vez.');
     };
-    rec.start();
-  }catch(err){
-    console.error(err);
-    stat('No se pudo iniciar el reconocimiento. Intenta nuevamente y revisa el permiso del micrófono.');
-    if(stopButton)stopButton.classList.add('hidden');
-    if(startButton)startButton.classList.remove('hidden');
-  }
+    const startRecognition=()=>{
+      if(session.stopped||session.done)return;
+      let rec;
+      try{rec=new SR();session.current=rec;recognition=rec;
+        rec.lang='en-US';
+        // Chrome puede cerrar una sesión al detectar silencio. La reabrimos
+        // automáticamente y conservamos el texto final para permitir pausas.
+        rec.continuous=true;
+        rec.interimResults=true;
+        rec.maxAlternatives=1;
+        rec.onstart=()=>{
+          stat(session.finalText?'🎙️ Te sigo escuchando. Puedes hacer pausas y continuar…':'🎙️ Listening… habla con calma. Puedes hacer pausas.');
+          if(stopButton)stopButton.classList.remove('hidden');
+          if(startButton)startButton.classList.add('hidden');
+        };
+        rec.onresult=e=>{
+          let interim='';
+          for(let i=e.resultIndex;i<e.results.length;i++){
+            const result=e.results[i];if(!result||!result[0])continue;
+            if(result.isFinal){session.finalText=(session.finalText+' '+result[0].transcript).trim();}
+            else interim+=result[0].transcript+' ';
+          }
+          const visible=(session.finalText+' '+interim).trim();
+          trans.value=visible;
+          if(visible)trans.placeholder='Tu respuesta aparecerá aquí mientras hablas…';
+        };
+        rec.onerror=e=>{
+          if(['not-allowed','service-not-allowed','audio-capture','network'].includes(e.error)){
+            session.stopped=true;
+            stat('El reconocimiento se interrumpió ('+e.error+'). Revisa la conexión y el permiso del micrófono.');
+          }else if(e.error==='no-speech'){
+            stat('No detecté voz por un momento. Puedes continuar hablando; no tienes que empezar de nuevo.');
+          }
+        };
+        rec.onend=()=>{
+          if(session.stopped){finish();return;}
+          // El servicio de Chrome a veces termina aunque continuous=true.
+          // Reiniciamos automáticamente tras una pausa breve sin borrar lo dicho.
+          session.timer=setTimeout(()=>{if(!session.stopped&&!session.done)startRecognition();},350);
+        };
+        rec.start();
+      }catch(err){
+        if(session.stopped){finish();return;}
+        stat('No pude reactivar el reconocimiento. Pulsa Finish speaking y vuelve a intentarlo.');
+        session.stopped=true;finish();
+      }
+    };
+    stat('🎙️ Preparando el micrófono… habla a tu ritmo.');
+    startRecognition();
+  }catch(err){stat('No se pudo iniciar el reconocimiento. Intenta nuevamente.');}
 }
-function finishMic(){if(!recognition)return;try{recognition.stop();}catch(e){}}
+function finishMic(){
+  const session=activeSpeechSession;
+  if(!session)return;
+  session.stopped=true;
+  if(session.timer)clearTimeout(session.timer);
+  try{if(session.current)session.current.stop();else if(!session.done){session.done=true;}}catch(e){}
+}
 function exampleSpanish(x){let m={'I’d like a coffee, please.':'Me gustaría un café, por favor.','I usually wake up at…':'Normalmente me despierto a las…','I usually have…':'Normalmente tomo / desayuno…','I go to bed at…':'Me voy a dormir a las…','I’m from Mexico.':'Soy de México.','In my free time, I like…':'En mi tiempo libre me gusta…','First, I…':'Primero yo…','For here, please. / To go, please.':'Para aquí, por favor. / Para llevar, por favor.','No, that’s all, thank you.':'No, eso es todo, gracias.','Could I have the bill, please?':'¿Me trae la cuenta, por favor?','I’m making…':'Estoy preparando…','We need…':'Necesitamos…','I’m full. It was delicious!':'Estoy satisfecha. ¡Estuvo delicioso!','I need to finish this today.':'Necesito terminar esto hoy.','I’ll take care of it.':'Yo me encargo.','I’m running late.':'Voy tarde.','Something came up.':'Surgió algo.','I’m really into…':'Me gusta mucho… / Me interesa mucho…','I’m a little overwhelmed.':'Me siento un poco abrumada.','I have a headache.':'Me duele la cabeza.','I don’t feel well.':'No me siento bien.','My name is… / I’m…':'Me llamo… / Soy…'};return m[x]||'Usa esta estructura para formar tu propia respuesta. / Use this structure to build your own answer.'}
 function explainPattern(x){if(x.includes('would like'))return '“Would like” is a polite way to express what you want. / “Please” makes the request more polite.';if(x.includes('usually'))return '“Usually” describes a habitual action. / The verb stays in the present simple for routines.';if(x.includes('Could I'))return '“Could I…?” is a polite request, especially with service staff.';if(x.includes('I’m'))return '“I’m” is the contraction of “I am”. It is commonly used for states, descriptions and location.';return 'Notice the word order and try using the expression in a similar situation.'}
 function explainPatternEs(x){if(x.includes('would like'))return '“Would like” es una forma amable de expresar lo que quieres. “Please” hace la petición más cortés.';if(x.includes('usually'))return '“Usually” describe algo que haces habitualmente. Para rutinas se usa el presente simple.';if(x.includes('Could I'))return '“Could I…?” es una petición amable, especialmente al pedir algo.';if(x.includes('I’m'))return '“I’m” es la contracción de “I am”. Se usa para estados, descripciones y ubicación.';return 'Observa el orden de las palabras e intenta usar la expresión en una situación parecida.'}
