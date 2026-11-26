@@ -98,15 +98,29 @@ async function listenMic(callback,stat,trans,target='guided',stopButton=null,sta
   const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
   if(!SR){stat('Este navegador no ofrece reconocimiento de voz. Prueba Chrome actualizado.');return;}
   if(!window.isSecureContext){stat('El reconocimiento de voz requiere una página HTTPS.');return;}
-  // Comprobamos el permiso y liberamos el micrófono antes de iniciar el reconocimiento.
+  // Abrimos el micrófono una sola vez y conservamos el flujo para grabar
+  // mientras Chrome realiza la transcripción en paralelo.
+  let microphoneStream;
   try{
-    const permissionStream=await navigator.mediaDevices.getUserMedia({audio:true});
-    permissionStream.getTracks().forEach(track=>track.stop());
+    microphoneStream=await navigator.mediaDevices.getUserMedia({audio:true});
   }catch(err){stat('No se pudo acceder al micrófono. Revisa el permiso de Chrome.');return;}
   try{
     if(activeSpeechSession){activeSpeechSession.stopped=true;try{activeSpeechSession.current&&activeSpeechSession.current.abort()}catch(e){}}
-    const session={stopped:false,finalText:'',current:null,timer:null,done:false};
+    const session={stopped:false,finalText:'',current:null,timer:null,done:false,stream:microphoneStream,recorder:null,chunks:[]};
     activeSpeechSession=session;
+    // La grabación se guarda localmente en el navegador; no se envía a ningún servidor.
+    if(window.MediaRecorder){
+      try{
+        const mime=['audio/webm;codecs=opus','audio/webm','audio/mp4'].find(t=>MediaRecorder.isTypeSupported&&MediaRecorder.isTypeSupported(t));
+        session.recorder=mime?new MediaRecorder(microphoneStream,{mimeType:mime}):new MediaRecorder(microphoneStream);
+        session.recorder.ondataavailable=e=>{if(e.data&&e.data.size)session.chunks.push(e.data)};
+        session.recorder.onstop=()=>{
+          if(session.chunks.length){const blob=new Blob(session.chunks,{type:session.recorder.mimeType||'audio/webm'});saveAudio(blob,target);}
+          session.stream.getTracks().forEach(track=>track.stop());
+        };
+        session.recorder.start();
+      }catch(recordError){session.recorder=null;stat('La transcripción está activa; esta vez no se pudo iniciar la grabación de audio.');}
+    }
     const cleanup=()=>{
       if(session.done)return;
       session.done=true;
@@ -118,6 +132,9 @@ async function listenMic(callback,stat,trans,target='guided',stopButton=null,sta
     };
     const finish=()=>{
       const result=session.finalText.trim()||trans.value.trim();
+      if(session.recorder&&session.recorder.state!=='inactive'){
+        try{session.recorder.stop()}catch(e){session.stream.getTracks().forEach(track=>track.stop())}
+      }else if(session.stream){session.stream.getTracks().forEach(track=>track.stop())}
       cleanup();
       if(result){trans.value=result;callback(result);}
       else stat('No se detectaron palabras. Pulsa Speak para intentarlo otra vez.');
@@ -179,6 +196,10 @@ function finishMic(){
   session.stopped=true;
   if(session.timer)clearTimeout(session.timer);
   try{if(session.current)session.current.stop();else if(!session.done){session.done=true;}}catch(e){}
+  // Si Chrome no dispara onend por alguna razón, detenemos también el audio.
+  if(session.recorder&&session.recorder.state!=='inactive'){
+    try{session.recorder.stop()}catch(e){if(session.stream)session.stream.getTracks().forEach(track=>track.stop())}
+  }
 }
 function exampleSpanish(x){let m={'I’d like a coffee, please.':'Me gustaría un café, por favor.','I usually wake up at…':'Normalmente me despierto a las…','I usually have…':'Normalmente tomo / desayuno…','I go to bed at…':'Me voy a dormir a las…','I’m from Mexico.':'Soy de México.','In my free time, I like…':'En mi tiempo libre me gusta…','First, I…':'Primero yo…','For here, please. / To go, please.':'Para aquí, por favor. / Para llevar, por favor.','No, that’s all, thank you.':'No, eso es todo, gracias.','Could I have the bill, please?':'¿Me trae la cuenta, por favor?','I’m making…':'Estoy preparando…','We need…':'Necesitamos…','I’m full. It was delicious!':'Estoy satisfecha. ¡Estuvo delicioso!','I need to finish this today.':'Necesito terminar esto hoy.','I’ll take care of it.':'Yo me encargo.','I’m running late.':'Voy tarde.','Something came up.':'Surgió algo.','I’m really into…':'Me gusta mucho… / Me interesa mucho…','I’m a little overwhelmed.':'Me siento un poco abrumada.','I have a headache.':'Me duele la cabeza.','I don’t feel well.':'No me siento bien.','My name is… / I’m…':'Me llamo… / Soy…'};return m[x]||'Usa esta estructura para formar tu propia respuesta. / Use this structure to build your own answer.'}
 function explainPattern(x){if(x.includes('would like'))return '“Would like” is a polite way to express what you want. / “Please” makes the request more polite.';if(x.includes('usually'))return '“Usually” describes a habitual action. / The verb stays in the present simple for routines.';if(x.includes('Could I'))return '“Could I…?” is a polite request, especially with service staff.';if(x.includes('I’m'))return '“I’m” is the contraction of “I am”. It is commonly used for states, descriptions and location.';return 'Notice the word order and try using the expression in a similar situation.'}
